@@ -1,0 +1,19 @@
+version: "3.8"
+services:
+  update-commander:
+    image: boingbasti/update-commander:latest
+    container_name: update-commander
+    restart: unless-stopped
+    ports:
+      # Standard port is 5000 inside container
+      # Mapped to 5005 on host to avoid conflicts
+      - "5005:5000"
+    volumes:
+      # REQUIRED: Access to Docker Socket to control/check containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      
+      # RECOMMENDED: Persist settings (Auto-Update config, intervals, etc.)
+      - ./config:/app/config
+    environment:
+      # Optional: Set your timezone for correct log timestamps
+      - TZ=Europe/Berlin

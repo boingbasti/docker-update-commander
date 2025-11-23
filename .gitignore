@@ -1,0 +1,7 @@
+push.sh
+.env
+.DS_Store
+__pycache__/
+*.pyc
+config/
+data/

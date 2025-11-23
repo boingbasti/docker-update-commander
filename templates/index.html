@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Container Update Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* High Contrast Dark Mode */
+        body { background-color: #0f0f0f; color: #f0f0f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { background-color: #1f1f1f; border: 1px solid #333; margin-bottom: 12px; }
+        .card-title { color: #ffffff; font-weight: 600; }
+        .image-tag { color: #aaaaaa; font-size: 0.9em; font-family: monospace; }
+        
+        /* Readable grey colors */
+        .text-muted { color: #adb5bd !important; }
+        small, .small { color: #adb5bd !important; }
+
+        /* FIX: Make alert-dark actually dark with light text */
+        .alert-dark {
+            background-color: #2b2b2b;
+            border-color: #444;
+            color: #adb5bd;
+        }
+
+        /* Version Info Box */
+        .version-info {
+            font-size: 0.85em; background-color: #2b2b2b; padding: 10px;
+            border-radius: 4px; margin-top: 10px; display: none; border-left: 3px solid #6c757d;
+        }
+        .v-label { color: #adb5bd; width: 60px; display: inline-block; }
+        .v-val { color: #fff; font-family: monospace; font-weight: bold; }
+        .v-date { color: #adb5bd; }
+        .v-new { color: #2ecc71; font-weight: bold; }
+
+        .header-area {
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid #333; padding-bottom: 20px; margin-bottom: 25px;
+        }
+        
+        /* Modal Styles */
+        .modal-content { background-color: #1f1f1f; color: #f0f0f0; border: 1px solid #444; }
+        .modal-header { border-bottom: 1px solid #333; }
+        .modal-footer { border-top: 1px solid #333; }
+        .btn-close { filter: invert(1); }
+        .form-control, .form-select { background-color: #2b2b2b; border: 1px solid #444; color: #fff; }
+        .form-control:focus, .form-select:focus { background-color: #333; color: #fff; border-color: #0d6efd; }
+
+        /* Auto-Update Checkbox */
+        .auto-update-select {
+            display: none; /* Hidden by default */
+            margin-top: 5px; padding-top: 5px; border-top: 1px solid #333;
+        }
+        .form-check-input:checked { background-color: #2ecc71; border-color: #2ecc71; }
+
+        /* Toast Notification */
+        .toast { background-color: #2b2b2b; color: #f0f0f0; border: 1px solid #2ecc71; }
+        .btn-close-white { filter: invert(1); }
+    </style>
+</head>
+<body>
+
+<div class="container py-4">
+    <div class="header-area">
+        <div>
+            <h2 class="mb-0">🐳 Docker Update Commander</h2>
+            <small>Manage your container updates securely</small>
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+            
+            <button id="btn-update-all-found" class="btn btn-success fw-bold" style="display: none;" onclick="confirmMassUpdate()">
+                🚀 Update All
+            </button>
+
+            <select class="form-select form-select-sm" id="sortSelect" onchange="renderContainerList()" style="width: auto; min-width: 120px;">
+                <option value="name">Sort: A-Z</option>
+                <option value="updates">Sort: Updates</option>
+            </select>
+            
+            <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
+            <button class="btn btn-primary" onclick="checkAllContainers()" id="btn-check-all">🔍 Check All</button>
+        </div>
+    </div>
+
+    <div id="container-list">
+        <div class="text-center text-muted py-5">
+            <div class="spinner-border text-primary mb-3" role="status"></div>
+            <div>Loading containers...</div>
+        </div>
+    </div>
+</div>
+
+<div class="toast-container position-fixed bottom-0 end-0 p-3">
+  <div id="liveToast" class="toast align-items-center" role="alert" aria-live="assertive" aria-atomic="true">
+    <div class="d-flex">
+      <div class="toast-body">✅ Settings saved successfully!</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="confirmModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-warning">⚠️ Confirm Update</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmModalText">Are you sure?</p>
+                <div class="alert alert-dark small mb-0">
+                    The container will be stopped, removed, and recreated with the new image. This causes a brief downtime.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="executePendingUpdate()">Yes, Update</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="settingsModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Settings</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                
+                <h6 class="mb-3 text-primary">1. Check Strategy</h6>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="checkMode" id="modeManual" value="manual" onchange="updateSettingsUI()">
+                    <label class="form-check-label" for="modeManual">Manual Only <br> <small>Only check when you click "Check".</small></label>
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="radio" name="checkMode" id="modeStartup" value="startup" onchange="updateSettingsUI()">
+                    <label class="form-check-label" for="modeStartup">On Page Load <br> <small>Check all when opening this dashboard.</small></label>
+                </div>
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="radio" name="checkMode" id="modeBackground" value="background" onchange="updateSettingsUI()">
+                    <label class="form-check-label" for="modeBackground">Background Schedule <br> <small>Check automatically in background.</small></label>
+                </div>
+                <div id="intervalGroup" class="mb-4 ms-4" style="opacity: 0.5; pointer-events: none;">
+                    <label for="checkInterval" class="form-label small">Check Interval (Minutes)</label>
+                    <input type="number" class="form-control form-control-sm" id="checkInterval" min="10" value="60" style="width: 100px;">
+                </div>
+
+                <h6 class="mb-3 text-primary">2. Auto-Update Options</h6>
+                <div id="autoUpdateGroup" style="opacity: 0.5; pointer-events: none;">
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="autoUpdateMode" id="autoUpOff" value="off" onchange="loadContainers()">
+                        <label class="form-check-label" for="autoUpOff">Off <br> <small>Never update automatically.</small></label>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="autoUpdateMode" id="autoUpAll" value="all" onchange="loadContainers()">
+                        <label class="form-check-label" for="autoUpAll">All Containers <br> <small class="text-danger">Updates everything automatically.</small></label>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="autoUpdateMode" id="autoUpSelected" value="selected" onchange="loadContainers()">
+                        <label class="form-check-label" for="autoUpSelected">Selected Containers Only <br> <small>Shows checkboxes on dashboard.</small></label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" onclick="saveSettings()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    let currentConfig = {};
+    let allContainers = [];
+    let checkAbortController = null;
+    let pendingUpdateTarget = null; 
+
+    function showToast(message) {
+        const toastEl = document.getElementById('liveToast');
+        const toastBody = toastEl.querySelector('.toast-body');
+        toastBody.innerText = message || 'Settings saved successfully!';
+        const toast = new bootstrap.Toast(toastEl);
+        toast.show();
+    }
+
+    function updateSettingsUI() {
+        const isBg = document.getElementById('modeBackground').checked;
+        const intGrp = document.getElementById('intervalGroup');
+        intGrp.style.opacity = isBg ? '1' : '0.5';
+        intGrp.style.pointerEvents = isBg ? 'auto' : 'none';
+
+        const autoGrp = document.getElementById('autoUpdateGroup');
+        autoGrp.style.opacity = isBg ? '1' : '0.5';
+        autoGrp.style.pointerEvents = isBg ? 'auto' : 'none';
+    }
+
+    async function loadSettings() {
+        try {
+            const res = await fetch('/api/settings');
+            currentConfig = await res.json();
+            
+            const cmRadio = document.querySelector(`input[name="checkMode"][value="${currentConfig.check_mode || 'manual'}"]`);
+            if (cmRadio) cmRadio.checked = true;
+            document.getElementById('checkInterval').value = currentConfig.check_interval || 60;
+            const amRadio = document.querySelector(`input[name="autoUpdateMode"][value="${currentConfig.auto_update_mode || 'off'}"]`);
+            if (amRadio) amRadio.checked = true;
+            
+            updateSettingsUI();
+            return currentConfig;
+        } catch (e) { return {}; }
+    }
+
+    async function saveSettings() {
+        const checkMode = document.querySelector('input[name="checkMode"]:checked').value;
+        const interval = document.getElementById('checkInterval').value;
+        const autoUpdateMode = document.querySelector('input[name="autoUpdateMode"]:checked').value;
+        const newConfig = { check_mode: checkMode, check_interval: parseInt(interval), auto_update_mode: autoUpdateMode };
+
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(newConfig)
+            });
+            const data = await res.json();
+            if (data.success) {
+                currentConfig = data.config;
+                bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
+                showToast('✅ Settings saved successfully!');
+                loadContainers(); 
+            }
+        } catch (e) { alert('Error saving settings: ' + e); }
+    }
+
+    async function toggleAutoUpdate(containerName, isChecked) {
+        let list = currentConfig.auto_update_containers || [];
+        if (isChecked) { if (!list.includes(containerName)) list.push(containerName); } 
+        else { list = list.filter(n => n !== containerName); }
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ auto_update_containers: list })
+            });
+            if(res.ok) currentConfig.auto_update_containers = list;
+        } catch(e) { console.error(e); }
+    }
+
+    async function loadContainers() {
+        try {
+            if (!currentConfig.check_mode) await loadSettings();
+            const response = await fetch('/api/containers');
+            allContainers = await response.json();
+            renderContainerList();
+        } catch (error) { document.getElementById('container-list').innerHTML = `<div class="alert alert-danger">Error: ${error}</div>`; }
+    }
+
+    function renderContainerList() {
+        const list = document.getElementById('container-list');
+        list.innerHTML = '';
+
+        if (allContainers.length === 0) {
+            list.innerHTML = '<div class="alert alert-secondary">No containers found.</div>';
+            return;
+        }
+
+        const updatesAvailableCount = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local).length;
+        const btnUpdateAll = document.getElementById('btn-update-all-found');
+        if (updatesAvailableCount > 0) {
+            btnUpdateAll.style.display = 'block';
+            btnUpdateAll.innerText = `🚀 Update All (${updatesAvailableCount})`;
+        } else {
+            btnUpdateAll.style.display = 'none';
+        }
+
+        const sortMode = document.getElementById('sortSelect').value;
+        const sorted = [...allContainers].sort((a, b) => {
+            if (sortMode === 'updates') {
+                const scoreA = getUpdateScore(a);
+                const scoreB = getUpdateScore(b);
+                if (scoreA !== scoreB) return scoreB - scoreA;
+            }
+            return a.name.localeCompare(b.name);
+        });
+
+        const showCheckboxes = (currentConfig.check_mode === 'background' && currentConfig.auto_update_mode === 'selected');
+        const selectedList = currentConfig.auto_update_containers || [];
+
+        sorted.forEach(c => {
+            let state = {
+                badgeClass: 'bg-secondary', badgeText: 'Unknown',
+                btnUpdateClass: 'btn-secondary disabled', btnUpdateDisabled: 'disabled',
+                infoBoxStyle: 'display:none;', infoBoxContent: '', infoBorderColor: '#6c757d'
+            };
+
+            if (c.cached_result) {
+                const data = c.cached_result;
+                if (data.is_local) {
+                    state.badgeClass = 'bg-info text-dark'; state.badgeText = 'Local Image';
+                    state.btnUpdateClass = 'btn-secondary disabled'; state.btnUpdateDisabled = 'disabled';
+                    state.infoBoxStyle = 'display:block;'; state.infoBorderColor = '#0dcaf0';
+                    state.infoBoxContent = `<div class="mb-1"><span class="v-label">Current:</span> <span class="v-val">${data.current_id_short}</span> <small class="v-date">(${formatDate(data.current_created)})</small></div><div class="text-muted small">No remote version available</div>`;
+                }
+                else if (data.update_available) {
+                    state.badgeClass = 'bg-danger'; state.badgeText = 'Update Found!';
+                    state.btnUpdateClass = 'btn-success'; state.btnUpdateDisabled = ''; 
+                    state.infoBoxStyle = 'display:block;'; state.infoBorderColor = '#e74c3c';
+                    state.infoBoxContent = `<div class="mb-1"><span class="v-label">Current:</span> <span class="v-val">${data.current_id_short}</span> <small class="v-date">(${formatDate(data.current_created)})</small></div><div><span class="v-label">New:</span> <span class="v-new">${data.new_id_short}</span> <small class="v-new">(${formatDate(data.new_created)})</small></div>`;
+                } else {
+                    state.badgeClass = 'bg-success'; state.badgeText = 'Up to Date';
+                    state.infoBoxStyle = 'display:block;'; state.infoBorderColor = '#2ecc71';
+                    state.infoBoxContent = `<div><span class="v-label">Current:</span> <span class="v-val">${data.current_id_short}</span> <small class="v-date">(${formatDate(data.current_created)})</small></div>`;
+                }
+            }
+
+            const checkboxDisplay = showCheckboxes ? 'block' : 'none';
+            const isChecked = selectedList.includes(c.name) ? 'checked' : '';
+
+            const html = `
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+                            <div style="min-width: 200px;">
+                                <h5 class="card-title mb-1">${c.name}</h5>
+                                <div class="image-tag">📦 ${truncateString(c.image, 40)}</div>
+                                <div class="auto-update-select" style="display: ${checkboxDisplay}">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="cb-${c.id}" onchange="toggleAutoUpdate('${c.name}', this.checked)" ${isChecked}>
+                                        <label class="form-check-label small" for="cb-${c.id}">Auto-Update this container</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <span id="badge-${c.id}" class="badge ${state.badgeClass} py-2" style="min-width: 100px;">${state.badgeText}</span>
+                                <button class="btn btn-sm btn-outline-info btn-check-action" style="width: 80px;" data-id="${c.id}" data-name="${c.name}" onclick="checkUpdate('${c.id}', this)">Check</button>
+                                <button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>
+                            </div>
+                        </div>
+                        <div id="info-${c.id}" class="version-info" style="${state.infoBoxStyle} border-left-color: ${state.infoBorderColor}">${state.infoBoxContent}</div>
+                    </div>
+                </div>`;
+            list.innerHTML += html;
+        });
+    }
+
+    function getUpdateScore(c) {
+        if (!c.cached_result) return 0; 
+        if (c.cached_result.is_local) return -1; 
+        if (c.cached_result.update_available) return 2; 
+        return 1; 
+    }
+
+    function truncateString(str, num) { return str.length <= num ? str : str.slice(0, num) + '...'; }
+    function formatDate(isoString) { try { return new Date(isoString).toLocaleString(); } catch (e) { return isoString; } }
+
+    async function checkAllContainers() {
+        const mainBtn = document.getElementById('btn-check-all');
+        if (checkAbortController) {
+            checkAbortController.abort(); checkAbortController = null;
+            mainBtn.innerHTML = '🔍 Check All'; mainBtn.classList.replace('btn-danger', 'btn-primary');
+            return;
+        }
+        checkAbortController = new AbortController();
+        const signal = checkAbortController.signal;
+        mainBtn.innerHTML = '⏹ Stop'; mainBtn.classList.replace('btn-primary', 'btn-danger');
+        const allBtns = document.querySelectorAll('.btn-check-action');
+        const ids = Array.from(allBtns).map(b => b.getAttribute('data-id'));
+        try {
+            for (const id of ids) {
+                if (signal.aborted) break;
+                const currentBtn = document.querySelector(`button[data-id="${id}"]`);
+                if (currentBtn) await checkUpdate(id, currentBtn, signal);
+            }
+        } finally {
+            checkAbortController = null;
+            mainBtn.innerHTML = '🔍 Check All'; mainBtn.classList.replace('btn-danger', 'btn-primary');
+        }
+    }
+
+    async function checkUpdate(id, btn, signal = null) {
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; btn.disabled = true;
+        const infoBox = document.getElementById('info-' + id); if(infoBox) infoBox.style.display = 'none';
+        try {
+            await fetch('/api/check/' + id, { method: 'POST', signal: signal });
+            await loadContainers(); 
+        } catch (e) { 
+            if (e.name !== 'AbortError') console.error(e);
+            btn.innerHTML = 'Check'; btn.disabled = false; 
+        }
+    }
+
+    // --- CONFIRMATION MODAL LOGIC ---
+    
+    function confirmSingleUpdate(name, id) {
+        pendingUpdateTarget = { name: name, id: id };
+        document.getElementById('confirmModalText').innerText = `Update "${name}" now?`;
+        new bootstrap.Modal(document.getElementById('confirmModal')).show();
+    }
+
+    function confirmMassUpdate() {
+        const updatesAvailable = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local);
+        if (updatesAvailable.length === 0) return;
+        
+        pendingUpdateTarget = 'ALL';
+        document.getElementById('confirmModalText').innerText = `Update ${updatesAvailable.length} containers now?`;
+        new bootstrap.Modal(document.getElementById('confirmModal')).show();
+    }
+
+    function executePendingUpdate() {
+        const modalEl = document.getElementById('confirmModal');
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        modal.hide();
+
+        if (!pendingUpdateTarget) return;
+
+        if (pendingUpdateTarget === 'ALL') {
+            performMassUpdate();
+        } else {
+            performSingleUpdate(pendingUpdateTarget.name, pendingUpdateTarget.id);
+        }
+    }
+
+    async function performMassUpdate() {
+        const updatesAvailable = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local);
+        for (const c of updatesAvailable) {
+            await performSingleUpdate(c.name, c.id); 
+        }
+    }
+
+    async function performSingleUpdate(name, id) {
+        const btn = document.getElementById('btn-update-' + id);
+        const badge = document.getElementById('badge-' + id);
+        if(btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
+        if(badge) { badge.className = 'badge bg-warning text-dark py-2'; badge.innerText = 'Updating...'; }
+        
+        try {
+            const res = await fetch('/api/update/' + name, {method: 'POST'});
+            const data = await res.json();
+            if(data.success) {
+                if(badge) { badge.className = 'badge bg-success py-2'; badge.innerText = 'Done!'; }
+                if(btn) { btn.innerHTML = '✔'; }
+                await new Promise(r => setTimeout(r, 2500)); 
+                await loadContainers(); 
+                const newCheckBtn = document.querySelector(`button[data-name="${name}"]`);
+                if (newCheckBtn) { 
+                    const newId = newCheckBtn.getAttribute('data-id');
+                    await checkUpdate(newId, newCheckBtn); 
+                }
+            } else { throw new Error(data.error); }
+        } catch (e) { 
+            console.error(e);
+            if(btn) { btn.innerText = 'Retry'; btn.disabled = false; }
+            if(badge) { badge.className = 'badge bg-danger py-2'; badge.innerText = 'Failed'; }
+            alert('Update failed for ' + name + ': ' + e); 
+        }
+    }
+
+    async function init() {
+        const settings = await loadSettings();
+        await loadContainers();
+        if (settings.check_mode === 'startup') {
+            setTimeout(checkAllContainers, 100);
+        }
+    }
+
+    init();
+</script>
+</body>
+</html>
