@@ -20,7 +20,7 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
-# Global Cache to store check results in memory
+# Global Cache
 SERVER_CACHE = {}
 CACHE_LOCK = threading.Lock()
 
@@ -29,7 +29,7 @@ DEFAULT_CONFIG = {
     "check_mode": "manual",       # Options: 'manual', 'startup', 'background'
     "check_interval": 60,         # Minutes
     "auto_update_mode": "off",    # Options: 'off', 'all', 'selected'
-    "auto_update_containers": []  # List of container names allowed to auto-update
+    "auto_update_containers": []  # List of container names
 }
 
 # Docker Setup
@@ -39,7 +39,6 @@ except Exception as e:
     logger.error(f"Failed to connect to Docker Socket: {e}")
     client = None
 
-# We use Watchtower as the engine to perform the actual container replacement
 UPDATER_IMAGE = "containrrr/watchtower"
 
 # --- Helper Functions ---
@@ -80,7 +79,6 @@ def get_image_name(container):
 def perform_single_check(container_id):
     """
     Performs the update check logic for a single container.
-    Handles pulling and comparing IDs.
     """
     container = client.containers.get(container_id)
     current_img = container.image
@@ -106,11 +104,9 @@ def perform_single_check(container_id):
         update_available = new_id != current_id
         
     except (docker.errors.NotFound, docker.errors.APIError):
-        # CHANGED: Clean log message for local images
         is_local = True
         logger.info(f"Local detection: '{image_name}' not found on registry. Treating as local image.")
     except Exception as e:
-        # Re-raise real errors (network issues, etc.)
         raise e
 
     result = {
@@ -130,10 +126,20 @@ def perform_single_check(container_id):
 
 def trigger_updater_engine(container_name):
     """Triggers the external updater engine (Watchtower)."""
+    
+    # 1. FIX: Ensure we have the LATEST Watchtower image to avoid old API clients
+    try:
+        logger.info(f"Pulling latest updater image: {UPDATER_IMAGE}")
+        client.images.pull(UPDATER_IMAGE)
+    except Exception as e:
+        logger.warning(f"Could not pull latest updater image, using local cache: {e}")
+
+    # 2. FIX: Force newer API version via Environment Variable
     client.containers.run(
         image=UPDATER_IMAGE,
         command=f"--run-once {container_name}",
         volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}},
+        environment={'DOCKER_API_VERSION': '1.44'},  # Solves "client version 1.25 is too old"
         remove=True
     )
 
@@ -173,7 +179,6 @@ def background_worker():
                             try:
                                 result = perform_single_check(c.id)
                                 
-                                # Auto-Update logic (skip if local or no update)
                                 if result['update_available'] and not result.get('is_local', False):
                                     should_update = False
                                     if auto_up_mode == 'all':
@@ -196,7 +201,7 @@ def background_worker():
                     except Exception as e:
                         logger.error(f"Error during container loop: {e}")
 
-            time.sleep(10) # Check config every 10s
+            time.sleep(10)
             
         except Exception as outer_e:
             logger.error(f"Critical worker error: {outer_e}")
@@ -220,11 +225,9 @@ def update_settings():
     new_settings = request.json
     current_config = load_config()
     allowed_keys = ["check_mode", "check_interval", "auto_update_mode", "auto_update_containers"]
-    
     for key in allowed_keys:
         if key in new_settings:
             current_config[key] = new_settings[key]
-            
     if save_config(current_config):
         return jsonify({'success': True, 'config': current_config})
     else:
