@@ -71,6 +71,15 @@
             <button id="btn-update-all-found" class="btn btn-success fw-bold" style="display: none;" onclick="confirmMassUpdate()">
                 🚀 Update All
             </button>
+            <button id="btn-select-mode" class="btn btn-outline-warning fw-bold" style="display: none;" onclick="toggleSelectMode()">
+                ☑ Select
+            </button>
+            <button id="btn-cancel-select" class="btn btn-outline-secondary fw-bold" style="display: none;" onclick="toggleSelectMode()">
+                Cancel
+            </button>
+            <button id="btn-update-selected" class="btn btn-warning fw-bold" style="display: none;" onclick="confirmSelectedUpdate()">
+                🚀 Update Selected
+            </button>
 
             <select class="form-select form-select-sm" id="sortSelect" onchange="renderContainerList()" style="width: auto; min-width: 120px;">
                 <option value="name">Sort: A-Z</option>
@@ -109,7 +118,11 @@
             <div class="modal-body">
                 <p id="confirmModalText">Are you sure?</p>
                 <div class="alert alert-dark small mb-0">
-                    The container will be stopped, removed, and recreated with the new image. This causes a brief downtime.
+                    The container will be stopped, removed, and recreated with the new image. This causes a brief downtime.<br><br>
+                    ⚠️ Updates run directly on the Docker daemon. Closing this page will <strong>not</strong> stop a running update — it will complete regardless.
+                </div>
+                <div id="selfUpdateWarning" class="alert alert-warning small mt-2 mb-0" style="display:none;">
+                    🔄 This will update the dashboard itself. The connection will drop — just refresh the page after a few seconds.
                 </div>
             </div>
             <div class="modal-footer">
@@ -147,7 +160,13 @@
                     <input type="number" class="form-control form-control-sm" id="checkInterval" min="10" value="60" style="width: 100px;">
                 </div>
 
-                <h6 class="mb-3 text-primary">2. Auto-Update Options</h6>
+                <h6 class="mb-3 text-primary">2. Cleanup</h6>
+                <div class="form-check mb-4">
+                    <input class="form-check-input" type="checkbox" id="removeOldImages">
+                    <label class="form-check-label" for="removeOldImages">Remove old images after update <br> <small>Deletes the replaced image after each update. Images still used by other containers are kept.</small></label>
+                </div>
+
+                <h6 class="mb-3 text-primary">3. Auto-Update Options</h6>
                 <div id="autoUpdateGroup" style="opacity: 0.5; pointer-events: none;">
                     <div class="form-check mb-2">
                         <input class="form-check-input" type="radio" name="autoUpdateMode" id="autoUpOff" value="off" onchange="loadContainers()">
@@ -176,7 +195,10 @@
     let currentConfig = {};
     let allContainers = [];
     let checkAbortController = null;
-    let pendingUpdateTarget = null; 
+    let pendingUpdateTarget = null;
+    let massUpdateRunning = false;
+    let selectModeActive = false;
+    let selectedForUpdate = new Set();
 
     function showToast(message) {
         const toastEl = document.getElementById('liveToast');
@@ -205,6 +227,7 @@
             const cmRadio = document.querySelector(`input[name="checkMode"][value="${currentConfig.check_mode || 'manual'}"]`);
             if (cmRadio) cmRadio.checked = true;
             document.getElementById('checkInterval').value = currentConfig.check_interval || 60;
+            document.getElementById('removeOldImages').checked = currentConfig.remove_old_images || false;
             const amRadio = document.querySelector(`input[name="autoUpdateMode"][value="${currentConfig.auto_update_mode || 'off'}"]`);
             if (amRadio) amRadio.checked = true;
             
@@ -217,7 +240,8 @@
         const checkMode = document.querySelector('input[name="checkMode"]:checked').value;
         const interval = document.getElementById('checkInterval').value;
         const autoUpdateMode = document.querySelector('input[name="autoUpdateMode"]:checked').value;
-        const newConfig = { check_mode: checkMode, check_interval: parseInt(interval), auto_update_mode: autoUpdateMode };
+        const removeOldImages = document.getElementById('removeOldImages').checked;
+        const newConfig = { check_mode: checkMode, check_interval: parseInt(interval), auto_update_mode: autoUpdateMode, remove_old_images: removeOldImages };
 
         try {
             const res = await fetch('/api/settings', {
@@ -265,11 +289,28 @@
 
         const updatesAvailableCount = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local).length;
         const btnUpdateAll = document.getElementById('btn-update-all-found');
-        if (updatesAvailableCount > 0) {
-            btnUpdateAll.style.display = 'block';
-            btnUpdateAll.innerText = `🚀 Update All (${updatesAvailableCount})`;
-        } else {
+        const btnSelectMode = document.getElementById('btn-select-mode');
+        const btnCancelSelect = document.getElementById('btn-cancel-select');
+        const btnUpdateSelected = document.getElementById('btn-update-selected');
+
+        if (selectModeActive) {
             btnUpdateAll.style.display = 'none';
+            btnSelectMode.style.display = 'none';
+            btnCancelSelect.style.display = 'block';
+            const selCount = selectedForUpdate.size;
+            btnUpdateSelected.style.display = selCount > 0 ? 'block' : 'none';
+            if (selCount > 0) btnUpdateSelected.innerText = `🚀 Update Selected (${selCount})`;
+        } else {
+            btnCancelSelect.style.display = 'none';
+            btnUpdateSelected.style.display = 'none';
+            if (updatesAvailableCount > 0) {
+                btnUpdateAll.style.display = 'block';
+                btnUpdateAll.innerText = `🚀 Update All (${updatesAvailableCount})`;
+                btnSelectMode.style.display = 'block';
+            } else {
+                btnUpdateAll.style.display = 'none';
+                btnSelectMode.style.display = 'none';
+            }
         }
 
         const sortMode = document.getElementById('sortSelect').value;
@@ -284,6 +325,7 @@
 
         const showCheckboxes = (currentConfig.check_mode === 'background' && currentConfig.auto_update_mode === 'selected');
         const selectedList = currentConfig.auto_update_containers || [];
+        const showSelectCheckboxes = selectModeActive;
 
         sorted.forEach(c => {
             let state = {
@@ -320,7 +362,7 @@
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
                             <div style="min-width: 200px;">
-                                <h5 class="card-title mb-1">${c.name}</h5>
+                                <h5 class="card-title mb-1">${c.name}${c.is_self ? ' <span class="badge bg-secondary ms-1" style="font-size:0.6em;vertical-align:middle;">this dashboard</span>' : ''}</h5>
                                 <div class="image-tag">📦 ${truncateString(c.image, 40)}</div>
                                 <div class="auto-update-select" style="display: ${checkboxDisplay}">
                                     <div class="form-check">
@@ -331,8 +373,13 @@
                             </div>
                             <div class="d-flex align-items-center gap-2">
                                 <span id="badge-${c.id}" class="badge ${state.badgeClass} py-2" style="min-width: 100px;">${state.badgeText}</span>
-                                <button class="btn btn-sm btn-outline-info btn-check-action" style="width: 80px;" data-id="${c.id}" data-name="${c.name}" onclick="checkUpdate('${c.id}', this)">Check</button>
-                                <button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>
+                                <button class="btn btn-sm btn-outline-info btn-check-action" style="width: 80px;" data-id="${c.id}" data-name="${c.name}" onclick="checkUpdate('${c.id}', this)" ${massUpdateRunning || checkAbortController || selectModeActive ? 'disabled' : ''}>Check</button>
+                                ${showSelectCheckboxes && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local
+                                    ? `<div class="form-check mb-0 ms-1">
+                                        <input class="form-check-input" type="checkbox" id="sel-${c.id}" ${selectedForUpdate.has(c.name) ? 'checked' : ''} onchange="toggleContainerSelection('${c.name}')">
+                                       </div>`
+                                    : `<button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled || massUpdateRunning || selectModeActive ? 'disabled' : ''} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>`
+                                }
                             </div>
                         </div>
                         <div id="info-${c.id}" class="version-info" style="${state.infoBoxStyle} border-left-color: ${state.infoBorderColor}">${state.infoBoxContent}</div>
@@ -382,9 +429,12 @@
         try {
             await fetch('/api/check/' + id, { method: 'POST', signal: signal });
             await loadContainers(); 
-        } catch (e) { 
-            if (e.name !== 'AbortError') console.error(e);
-            btn.innerHTML = 'Check'; btn.disabled = false; 
+        } catch (e) {
+            if (e.name !== 'AbortError') {
+                console.error(e);
+                await loadContainers();
+            }
+            btn.innerHTML = 'Check'; btn.disabled = false;
         }
     }
 
@@ -392,16 +442,43 @@
     
     function confirmSingleUpdate(name, id) {
         pendingUpdateTarget = { name: name, id: id };
+        const containerInfo = allContainers.find(c => c.id === id);
+        const isSelf = containerInfo && containerInfo.is_self;
         document.getElementById('confirmModalText').innerText = `Update "${name}" now?`;
+        document.getElementById('selfUpdateWarning').style.display = isSelf ? 'block' : 'none';
+        new bootstrap.Modal(document.getElementById('confirmModal')).show();
+    }
+
+    function toggleSelectMode() {
+        selectModeActive = !selectModeActive;
+        selectedForUpdate.clear();
+        renderContainerList();
+    }
+
+    function toggleContainerSelection(name) {
+        if (selectedForUpdate.has(name)) {
+            selectedForUpdate.delete(name);
+        } else {
+            selectedForUpdate.add(name);
+        }
+        renderContainerList();
+    }
+
+    function confirmSelectedUpdate() {
+        if (selectedForUpdate.size === 0) return;
+        pendingUpdateTarget = 'SELECTED';
+        document.getElementById('confirmModalText').innerText = `Update ${selectedForUpdate.size} selected container(s) now?`;
+        document.getElementById('selfUpdateWarning').style.display = 'none';
         new bootstrap.Modal(document.getElementById('confirmModal')).show();
     }
 
     function confirmMassUpdate() {
         const updatesAvailable = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local);
         if (updatesAvailable.length === 0) return;
-        
+
         pendingUpdateTarget = 'ALL';
         document.getElementById('confirmModalText').innerText = `Update ${updatesAvailable.length} containers now?`;
+        document.getElementById('selfUpdateWarning').style.display = 'none';
         new bootstrap.Modal(document.getElementById('confirmModal')).show();
     }
 
@@ -414,43 +491,95 @@
 
         if (pendingUpdateTarget === 'ALL') {
             performMassUpdate();
+        } else if (pendingUpdateTarget === 'SELECTED') {
+            performSelectedUpdate();
         } else {
             performSingleUpdate(pendingUpdateTarget.name, pendingUpdateTarget.id);
         }
     }
 
+    async function performSelectedUpdate() {
+        const toUpdate = allContainers
+            .filter(c => selectedForUpdate.has(c.name) && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local)
+            .sort((a, b) => (a.is_self ? 1 : 0) - (b.is_self ? 1 : 0));
+        selectModeActive = false;
+        selectedForUpdate.clear();
+        massUpdateRunning = true;
+        const checkAllBtn = document.getElementById('btn-check-all');
+        const updateAllBtn = document.getElementById('btn-update-all-found');
+        if (checkAllBtn) { checkAllBtn.disabled = true; }
+        if (updateAllBtn) { updateAllBtn.disabled = true; }
+        try {
+            for (const c of toUpdate) {
+                await performSingleUpdate(c.name, c.id);
+            }
+        } finally {
+            massUpdateRunning = false;
+            if (checkAllBtn) { checkAllBtn.disabled = false; }
+            if (updateAllBtn) { updateAllBtn.disabled = false; }
+            await loadContainers();
+        }
+    }
+
     async function performMassUpdate() {
-        const updatesAvailable = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local);
-        for (const c of updatesAvailable) {
-            await performSingleUpdate(c.name, c.id); 
+        massUpdateRunning = true;
+        const checkAllBtn = document.getElementById('btn-check-all');
+        const updateAllBtn = document.getElementById('btn-update-all-found');
+        if (checkAllBtn) { checkAllBtn.disabled = true; }
+        if (updateAllBtn) { updateAllBtn.disabled = true; }
+        const updatesAvailable = allContainers
+            .filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local)
+            .sort((a, b) => (a.is_self ? 1 : 0) - (b.is_self ? 1 : 0));
+        try {
+            for (const c of updatesAvailable) {
+                await performSingleUpdate(c.name, c.id);
+            }
+        } finally {
+            massUpdateRunning = false;
+            if (checkAllBtn) { checkAllBtn.disabled = false; }
+            if (updateAllBtn) { updateAllBtn.disabled = false; }
+            await loadContainers();
         }
     }
 
     async function performSingleUpdate(name, id) {
+        const containerInfo = allContainers.find(c => c.id === id);
+        const isSelf = containerInfo && containerInfo.is_self;
         const btn = document.getElementById('btn-update-' + id);
         const badge = document.getElementById('badge-' + id);
         if(btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
         if(badge) { badge.className = 'badge bg-warning text-dark py-2'; badge.innerText = 'Updating...'; }
-        
+
         try {
             const res = await fetch('/api/update/' + name, {method: 'POST'});
             const data = await res.json();
             if(data.success) {
+                if (isSelf) {
+                    if(badge) { badge.className = 'badge bg-info py-2'; badge.innerText = 'Restarting...'; }
+                    if(btn) { btn.innerHTML = '↻'; }
+                    return;
+                }
                 if(badge) { badge.className = 'badge bg-success py-2'; badge.innerText = 'Done!'; }
                 if(btn) { btn.innerHTML = '✔'; }
-                await new Promise(r => setTimeout(r, 2500)); 
-                await loadContainers(); 
+                await new Promise(r => setTimeout(r, 2500));
+                await loadContainers();
                 const newCheckBtn = document.querySelector(`button[data-name="${name}"]`);
-                if (newCheckBtn) { 
+                if (newCheckBtn) {
                     const newId = newCheckBtn.getAttribute('data-id');
-                    await checkUpdate(newId, newCheckBtn); 
+                    await checkUpdate(newId, newCheckBtn);
                 }
             } else { throw new Error(data.error); }
-        } catch (e) { 
+        } catch (e) {
+            if (isSelf) {
+                // Connection dropped = container is restarting, this is expected
+                if(badge) { badge.className = 'badge bg-info py-2'; badge.innerText = 'Restarting...'; }
+                if(btn) { btn.innerHTML = '↻'; }
+                return;
+            }
             console.error(e);
             if(btn) { btn.innerText = 'Retry'; btn.disabled = false; }
             if(badge) { badge.className = 'badge bg-danger py-2'; badge.innerText = 'Failed'; }
-            alert('Update failed for ' + name + ': ' + e); 
+            alert('Update failed for ' + name + ': ' + e);
         }
     }
 

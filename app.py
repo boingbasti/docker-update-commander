@@ -29,7 +29,8 @@ DEFAULT_CONFIG = {
     "check_mode": "manual",       # Options: 'manual', 'startup', 'background'
     "check_interval": 60,         # Minutes
     "auto_update_mode": "off",    # Options: 'off', 'all', 'selected'
-    "auto_update_containers": []  # List of container names
+    "auto_update_containers": [], # List of container names
+    "remove_old_images": False    # Remove replaced images after update
 }
 
 # Docker Setup
@@ -124,9 +125,9 @@ def perform_single_check(container_id):
         
     return result
 
-def trigger_updater_engine(container_name):
+def trigger_updater_engine(container_name, old_image_id=None):
     """Triggers the external updater engine (Watchtower)."""
-    
+
     # 1. FIX: Ensure we have the LATEST Watchtower image to avoid old API clients
     try:
         logger.info(f"Pulling latest updater image: {UPDATER_IMAGE}")
@@ -142,6 +143,16 @@ def trigger_updater_engine(container_name):
         environment={'DOCKER_API_VERSION': '1.44'},  # Solves "client version 1.25 is too old"
         remove=True
     )
+
+    # 3. Remove old image if setting is enabled
+    if old_image_id:
+        config = load_config()
+        if config.get('remove_old_images', False):
+            try:
+                client.images.remove(old_image_id, force=False)
+                logger.info(f"Removed old image {old_image_id[:12]} after update of {container_name}")
+            except Exception as e:
+                logger.warning(f"Could not remove old image {old_image_id[:12]}: {e}")
 
 # --- Background Worker ---
 
@@ -171,29 +182,48 @@ def background_worker():
                         auto_up_mode = config.get('auto_update_mode', 'off')
                         auto_up_list = config.get('auto_update_containers', [])
                         
+                        self_container = None
                         for c in containers:
-                            if c.short_id in current_hostname: continue
                             image_name = get_image_name(c)
                             if "watchtower" in image_name: continue
-                            
+                            if c.short_id in current_hostname:
+                                self_container = c
+                                continue  # process self last
+
                             try:
                                 result = perform_single_check(c.id)
-                                
+
                                 if result['update_available'] and not result.get('is_local', False):
                                     should_update = False
                                     if auto_up_mode == 'all':
                                         should_update = True
                                     elif auto_up_mode == 'selected' and c.name in auto_up_list:
                                         should_update = True
-                                    
+
                                     if should_update:
                                         logger.info(f"Auto-Update triggered for {c.name}")
-                                        trigger_updater_engine(c.name)
+                                        trigger_updater_engine(c.name, c.image.id)
                                         with CACHE_LOCK:
                                             if c.id in SERVER_CACHE: del SERVER_CACHE[c.id]
-                                            
+
                             except Exception as inner_e:
                                 logger.warning(f"Failed to process {c.name}: {inner_e}")
+
+                        # Handle self last so all other containers update first
+                        if self_container:
+                            try:
+                                result = perform_single_check(self_container.id)
+                                if result['update_available'] and not result.get('is_local', False):
+                                    should_update = False
+                                    if auto_up_mode == 'all':
+                                        should_update = True
+                                    elif auto_up_mode == 'selected' and self_container.name in auto_up_list:
+                                        should_update = True
+                                    if should_update:
+                                        logger.info(f"Auto-Update triggered for self: {self_container.name}")
+                                        trigger_updater_engine(self_container.name, self_container.image.id)
+                            except Exception as inner_e:
+                                logger.warning(f"Failed to process self container: {inner_e}")
                         
                         last_check_time = time.time()
                         logger.info("Background cycle finished.")
@@ -224,7 +254,7 @@ def get_settings():
 def update_settings():
     new_settings = request.json
     current_config = load_config()
-    allowed_keys = ["check_mode", "check_interval", "auto_update_mode", "auto_update_containers"]
+    allowed_keys = ["check_mode", "check_interval", "auto_update_mode", "auto_update_containers", "remove_old_images"]
     for key in allowed_keys:
         if key in new_settings:
             current_config[key] = new_settings[key]
@@ -246,16 +276,17 @@ def list_containers():
 
     for c in all_containers:
         try:
-            if c.short_id in current_hostname: continue
             image_name = get_image_name(c)
             if "watchtower" in image_name: continue
-            
+            is_self = c.short_id in current_hostname
+
             container_data = {
                 'id': c.id,
                 'name': c.name,
                 'image': image_name,
                 'status': c.status,
                 'short_id': c.short_id,
+                'is_self': is_self,
                 'cached_result': None
             }
             
@@ -283,7 +314,13 @@ def check_update(container_id):
 def run_update(container_name):
     if not client: return jsonify({'error': 'No docker connection'}), 500
     try:
-        trigger_updater_engine(container_name)
+        old_image_id = None
+        containers = client.containers.list(filters={'name': container_name})
+        for c in containers:
+            if c.name == container_name:
+                old_image_id = c.image.id
+                break
+        trigger_updater_engine(container_name, old_image_id)
         return jsonify({'success': True, 'message': f'Update triggered for {container_name}'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
