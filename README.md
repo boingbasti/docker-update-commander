@@ -26,7 +26,6 @@ It provides a safe, modern, and user-friendly interface to manage container upda
 The easiest way to run the Update Commander.
 
 ```yaml
-version: "3.8"
 services:
   update-commander:
     image: boingbasti/update-commander:latest
