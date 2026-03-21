@@ -141,7 +141,7 @@ def trigger_updater_engine(container_name, old_image_id=None):
         command=f"--run-once {container_name}",
         volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}},
         environment={'DOCKER_API_VERSION': '1.44'},  # Solves "client version 1.25 is too old"
-        remove=True
+        auto_remove=True
     )
 
     # 3. Remove old image if setting is enabled
