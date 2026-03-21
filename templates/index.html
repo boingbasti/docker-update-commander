@@ -306,7 +306,9 @@
             if (updatesAvailableCount > 0) {
                 btnUpdateAll.style.display = 'block';
                 btnUpdateAll.innerText = `🚀 Update All (${updatesAvailableCount})`;
+                btnUpdateAll.disabled = !!(checkAbortController || massUpdateRunning);
                 btnSelectMode.style.display = 'block';
+                btnSelectMode.disabled = !!(checkAbortController || massUpdateRunning);
             } else {
                 btnUpdateAll.style.display = 'none';
                 btnSelectMode.style.display = 'none';
@@ -378,7 +380,7 @@
                                     ? `<div class="form-check mb-0 ms-1">
                                         <input class="form-check-input" type="checkbox" id="sel-${c.id}" ${selectedForUpdate.has(c.name) ? 'checked' : ''} onchange="toggleContainerSelection('${c.name}')">
                                        </div>`
-                                    : `<button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled || massUpdateRunning || selectModeActive ? 'disabled' : ''} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>`
+                                    : `<button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled || massUpdateRunning || selectModeActive || checkAbortController ? 'disabled' : ''} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>`
                                 }
                             </div>
                         </div>
