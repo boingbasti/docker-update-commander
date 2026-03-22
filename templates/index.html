@@ -451,8 +451,8 @@
 
     async function checkUpdate(id, btn, signal = null) {
         const isSingleCheck = !checkAbortController;
-        if (isSingleCheck) { checkRunning = true; renderContainerList(); }
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; btn.disabled = true;
+        if (isSingleCheck) { checkRunning = true; renderContainerList(); btn = document.querySelector(`button.btn-check-action[data-id="${id}"]`); }
+        if (btn) { btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; btn.disabled = true; }
         const infoBox = document.getElementById('info-' + id); if(infoBox) infoBox.style.display = 'none';
         try {
             await fetch('/api/check/' + id, { method: 'POST', signal: signal });
