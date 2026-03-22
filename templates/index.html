@@ -306,6 +306,8 @@
         const isBusy = !!(massUpdateRunning || checkAbortController || checkRunning);
         const btnSettings = document.getElementById('btn-settings');
         if (btnSettings) btnSettings.disabled = isBusy;
+        const btnCheckAll = document.getElementById('btn-check-all');
+        if (btnCheckAll && !checkAbortController) btnCheckAll.disabled = isBusy;
 
         const updatesAvailableCount = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local).length;
         const btnUpdateAll = document.getElementById('btn-update-all-found');
@@ -326,9 +328,9 @@
             if (updatesAvailableCount > 0) {
                 btnUpdateAll.style.display = 'block';
                 btnUpdateAll.innerText = `🚀 Update All (${updatesAvailableCount})`;
-                btnUpdateAll.disabled = !!(checkAbortController || massUpdateRunning);
+                btnUpdateAll.disabled = !!(checkAbortController || massUpdateRunning || checkRunning);
                 btnSelectMode.style.display = 'block';
-                btnSelectMode.disabled = !!(checkAbortController || massUpdateRunning);
+                btnSelectMode.disabled = !!(checkAbortController || massUpdateRunning || checkRunning);
             } else {
                 btnUpdateAll.style.display = 'none';
                 btnSelectMode.style.display = 'none';
@@ -400,7 +402,7 @@
                                     ? `<div class="form-check mb-0 ms-1">
                                         <input class="form-check-input" type="checkbox" id="sel-${c.id}" ${selectedForUpdate.has(c.name) ? 'checked' : ''} onchange="toggleContainerSelection('${c.name}')">
                                        </div>`
-                                    : `<button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled || massUpdateRunning || selectModeActive || checkAbortController ? 'disabled' : ''} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>`
+                                    : `<button id="btn-update-${c.id}" class="btn btn-sm ${state.btnUpdateClass}" style="width: 80px;" ${state.btnUpdateDisabled || massUpdateRunning || checkRunning || selectModeActive || checkAbortController ? 'disabled' : ''} onclick="confirmSingleUpdate('${c.name}', '${c.id}')">Update</button>`
                                 }
                             </div>
                         </div>
@@ -431,6 +433,7 @@
         checkAbortController = new AbortController();
         const signal = checkAbortController.signal;
         mainBtn.innerHTML = '⏹ Stop'; mainBtn.classList.replace('btn-primary', 'btn-danger');
+        renderContainerList();
         const allBtns = document.querySelectorAll('.btn-check-action');
         const ids = Array.from(allBtns).map(b => b.getAttribute('data-id'));
         try {
@@ -572,13 +575,14 @@
     async function performSingleUpdate(name, id) {
         const containerInfo = allContainers.find(c => c.id === id);
         const isSelf = containerInfo && containerInfo.is_self;
+
+        const wasMassUpdate = massUpdateRunning;
+        if (!wasMassUpdate) { massUpdateRunning = true; renderContainerList(); }
+
         const btn = document.getElementById('btn-update-' + id);
         const badge = document.getElementById('badge-' + id);
         if(btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
         if(badge) { badge.className = 'badge bg-warning text-dark py-2'; badge.innerText = 'Updating...'; }
-
-        const wasMassUpdate = massUpdateRunning;
-        if (!wasMassUpdate) { massUpdateRunning = true; renderContainerList(); }
 
         try {
             const res = await fetch('/api/update/' + name, {method: 'POST'});
@@ -592,13 +596,13 @@
                 if(badge) { badge.className = 'badge bg-success py-2'; badge.innerText = 'Done!'; }
                 if(btn) { btn.innerHTML = '✔'; }
                 await new Promise(r => setTimeout(r, 2500));
-                if (!wasMassUpdate) massUpdateRunning = false;
                 await loadContainers();
                 const newCheckBtn = document.querySelector(`button[data-name="${name}"]`);
                 if (newCheckBtn) {
                     const newId = newCheckBtn.getAttribute('data-id');
                     await checkUpdate(newId, newCheckBtn);
                 }
+                if (!wasMassUpdate) { massUpdateRunning = false; renderContainerList(); }
             } else { throw new Error(data.error); }
         } catch (e) {
             if (isSelf) {
