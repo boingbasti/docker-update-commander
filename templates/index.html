@@ -16,8 +16,23 @@
         .text-muted { color: #adb5bd !important; }
         small, .small { color: #adb5bd !important; }
 
-        /* FIX: Make alert-dark actually dark with light text */
+        /* Dark mode alert overrides */
         .alert-dark {
+            background-color: #2b2b2b;
+            border-color: #444;
+            color: #adb5bd;
+        }
+        .alert-warning {
+            background-color: #2b2200;
+            border-color: #664d00;
+            color: #ffc966;
+        }
+        .alert-danger {
+            background-color: #2b0000;
+            border-color: #661a1a;
+            color: #ff9999;
+        }
+        .alert-secondary {
             background-color: #2b2b2b;
             border-color: #444;
             color: #adb5bd;
@@ -86,7 +101,7 @@
                 <option value="updates">Sort: Updates</option>
             </select>
             
-            <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
+            <button id="btn-settings" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#settingsModal">⚙️ Settings</button>
             <button class="btn btn-primary" onclick="checkAllContainers()" id="btn-check-all">🔍 Check All</button>
         </div>
     </div>
@@ -195,6 +210,7 @@
     let currentConfig = {};
     let allContainers = [];
     let checkAbortController = null;
+    let checkRunning = false;
     let pendingUpdateTarget = null;
     let massUpdateRunning = false;
     let selectModeActive = false;
@@ -287,6 +303,10 @@
             return;
         }
 
+        const isBusy = !!(massUpdateRunning || checkAbortController || checkRunning);
+        const btnSettings = document.getElementById('btn-settings');
+        if (btnSettings) btnSettings.disabled = isBusy;
+
         const updatesAvailableCount = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local).length;
         const btnUpdateAll = document.getElementById('btn-update-all-found');
         const btnSelectMode = document.getElementById('btn-select-mode');
@@ -375,7 +395,7 @@
                             </div>
                             <div class="d-flex align-items-center gap-2">
                                 <span id="badge-${c.id}" class="badge ${state.badgeClass} py-2" style="min-width: 100px;">${state.badgeText}</span>
-                                <button class="btn btn-sm btn-outline-info btn-check-action" style="width: 80px;" data-id="${c.id}" data-name="${c.name}" onclick="checkUpdate('${c.id}', this)" ${massUpdateRunning || checkAbortController || selectModeActive ? 'disabled' : ''}>Check</button>
+                                <button class="btn btn-sm btn-outline-info btn-check-action" style="width: 80px;" data-id="${c.id}" data-name="${c.name}" onclick="checkUpdate('${c.id}', this)" ${massUpdateRunning || checkAbortController || checkRunning || selectModeActive ? 'disabled' : ''}>Check</button>
                                 ${showSelectCheckboxes && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local
                                     ? `<div class="form-check mb-0 ms-1">
                                         <input class="form-check-input" type="checkbox" id="sel-${c.id}" ${selectedForUpdate.has(c.name) ? 'checked' : ''} onchange="toggleContainerSelection('${c.name}')">
@@ -427,12 +447,16 @@
     }
 
     async function checkUpdate(id, btn, signal = null) {
+        const isSingleCheck = !checkAbortController;
+        if (isSingleCheck) { checkRunning = true; renderContainerList(); }
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; btn.disabled = true;
         const infoBox = document.getElementById('info-' + id); if(infoBox) infoBox.style.display = 'none';
         try {
             await fetch('/api/check/' + id, { method: 'POST', signal: signal });
-            await loadContainers(); 
+            if (isSingleCheck) checkRunning = false;
+            await loadContainers();
         } catch (e) {
+            if (isSingleCheck) checkRunning = false;
             if (e.name !== 'AbortError') {
                 console.error(e);
                 await loadContainers();
@@ -553,6 +577,9 @@
         if(btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>'; }
         if(badge) { badge.className = 'badge bg-warning text-dark py-2'; badge.innerText = 'Updating...'; }
 
+        const wasMassUpdate = massUpdateRunning;
+        if (!wasMassUpdate) { massUpdateRunning = true; renderContainerList(); }
+
         try {
             const res = await fetch('/api/update/' + name, {method: 'POST'});
             const data = await res.json();
@@ -565,6 +592,7 @@
                 if(badge) { badge.className = 'badge bg-success py-2'; badge.innerText = 'Done!'; }
                 if(btn) { btn.innerHTML = '✔'; }
                 await new Promise(r => setTimeout(r, 2500));
+                if (!wasMassUpdate) massUpdateRunning = false;
                 await loadContainers();
                 const newCheckBtn = document.querySelector(`button[data-name="${name}"]`);
                 if (newCheckBtn) {
@@ -579,6 +607,7 @@
                 if(btn) { btn.innerHTML = '↻'; }
                 return;
             }
+            if (!wasMassUpdate) massUpdateRunning = false;
             console.error(e);
             if(btn) { btn.innerText = 'Retry'; btn.disabled = false; }
             if(badge) { badge.className = 'badge bg-danger py-2'; badge.innerText = 'Failed'; }

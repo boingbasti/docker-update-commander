@@ -186,7 +186,7 @@ def background_worker():
                         for c in containers:
                             image_name = get_image_name(c)
                             if "watchtower" in image_name: continue
-                            if c.short_id in current_hostname:
+                            if c.attrs.get('Config', {}).get('Hostname', '') == current_hostname:
                                 self_container = c
                                 continue  # process self last
 
@@ -278,7 +278,7 @@ def list_containers():
         try:
             image_name = get_image_name(c)
             if "watchtower" in image_name: continue
-            is_self = c.short_id in current_hostname
+            is_self = c.attrs.get('Config', {}).get('Hostname', '') == current_hostname
 
             container_data = {
                 'id': c.id,
