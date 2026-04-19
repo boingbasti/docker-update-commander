@@ -15,6 +15,7 @@ It provides a safe, modern, and user-friendly interface to manage container upda
 * **Flexible Updates:** Update all containers at once, or use Select Mode to pick specific ones.
 * **Self-Update Support:** The dashboard can update itself — it triggers last so all other containers finish first.
 * **Cleanup Option:** Automatically remove replaced images after an update to keep your host clean.
+* **Dependent Container Restart:** Automatically restarts containers that share their network with an updated container (e.g. containers routed through a VPN/WireGuard container).
 * **Production Ready:** Built on **Alpine Linux** (~68MB) running on a robust **Gunicorn** WSGI server.
 * **Local Image Support:** Smartly detects local-only images to prevent update errors.
 * **Sort & Control:** Sort containers by name or update status. **Stop** running checks anytime.
@@ -57,7 +58,8 @@ No complex environment variables needed! All logic settings are managed via the 
 
 * **Check Strategy:** Choose between *Manual Only*, *On Page Load*, or *Background Schedule*.
 * **Interval:** Set the background check frequency (in minutes).
-* **Cleanup:** Optionally remove the old image after each update. Images still used by other containers are kept automatically.
+* **Cleanup:** Optionally remove the old image after each update. Images still used by running containers are kept automatically.
+* **Restart Dependents:** Optionally restart containers that share their network with the updated container (useful for VPN/WireGuard setups).
 * **Auto-Update:** Enable auto-updates for *All* or *Selected Containers* (only available in Background mode).
 
 ---

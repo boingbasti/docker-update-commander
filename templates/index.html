@@ -176,9 +176,13 @@
                 </div>
 
                 <h6 class="mb-3 text-primary">2. Cleanup</h6>
-                <div class="form-check mb-4">
+                <div class="form-check mb-3">
                     <input class="form-check-input" type="checkbox" id="removeOldImages">
                     <label class="form-check-label" for="removeOldImages">Remove old images after update <br> <small>Deletes the replaced image after each update. Images still used by other containers are kept.</small></label>
+                </div>
+                <div class="form-check mb-4">
+                    <input class="form-check-input" type="checkbox" id="restartDependents">
+                    <label class="form-check-label" for="restartDependents">Restart dependent containers after update <br> <small>Restarts containers that share their network with the updated container — e.g. containers routed through a VPN container.</small></label>
                 </div>
 
                 <h6 class="mb-3 text-primary">3. Auto-Update Options</h6>
@@ -244,6 +248,7 @@
             if (cmRadio) cmRadio.checked = true;
             document.getElementById('checkInterval').value = currentConfig.check_interval || 60;
             document.getElementById('removeOldImages').checked = currentConfig.remove_old_images || false;
+            document.getElementById('restartDependents').checked = currentConfig.restart_dependents || false;
             const amRadio = document.querySelector(`input[name="autoUpdateMode"][value="${currentConfig.auto_update_mode || 'off'}"]`);
             if (amRadio) amRadio.checked = true;
             
@@ -257,7 +262,8 @@
         const interval = document.getElementById('checkInterval').value;
         const autoUpdateMode = document.querySelector('input[name="autoUpdateMode"]:checked').value;
         const removeOldImages = document.getElementById('removeOldImages').checked;
-        const newConfig = { check_mode: checkMode, check_interval: parseInt(interval), auto_update_mode: autoUpdateMode, remove_old_images: removeOldImages };
+        const restartDependents = document.getElementById('restartDependents').checked;
+        const newConfig = { check_mode: checkMode, check_interval: parseInt(interval), auto_update_mode: autoUpdateMode, remove_old_images: removeOldImages, restart_dependents: restartDependents };
 
         try {
             const res = await fetch('/api/settings', {

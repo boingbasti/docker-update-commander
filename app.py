@@ -30,7 +30,8 @@ DEFAULT_CONFIG = {
     "check_interval": 60,         # Minutes
     "auto_update_mode": "off",    # Options: 'off', 'all', 'selected'
     "auto_update_containers": [], # List of container names
-    "remove_old_images": False    # Remove replaced images after update
+    "remove_old_images": False,   # Remove replaced images after update
+    "restart_dependents": False   # Restart containers that share network with updated container
 }
 
 # Docker Setup
@@ -149,10 +150,51 @@ def trigger_updater_engine(container_name, old_image_id=None):
         config = load_config()
         if config.get('remove_old_images', False):
             try:
-                client.images.remove(old_image_id, force=False)
-                logger.info(f"Removed old image {old_image_id[:12]} after update of {container_name}")
+                # Check if any RUNNING container still uses the old image — don't break those.
+                # Stopped containers referencing it are irrelevant (force=True handles them).
+                running_users = [
+                    c.name for c in client.containers.list()
+                    if c.image.id == old_image_id
+                ]
+                if running_users:
+                    logger.info(f"Skipping removal of old image {old_image_id[:12]}: still used by running containers {running_users}")
+                else:
+                    client.images.remove(old_image_id, force=True)
+                    logger.info(f"Removed old image {old_image_id[:12]} after update of {container_name}")
             except Exception as e:
                 logger.warning(f"Could not remove old image {old_image_id[:12]}: {e}")
+
+def get_dependent_containers(container_id, container_name):
+    """Find running containers whose network namespace is shared with the given container."""
+    dependents = []
+    try:
+        for c in client.containers.list():
+            if c.id == container_id:
+                continue
+            network_mode = c.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            if network_mode.startswith('container:'):
+                ref = network_mode.split('container:', 1)[1]
+                # ref can be full id, short id, or name
+                if ref == container_name or ref == container_id or container_id.startswith(ref):
+                    dependents.append(c)
+    except Exception as e:
+        logger.warning(f"Could not determine dependent containers: {e}")
+    return dependents
+
+def restart_dependents_if_enabled(container_id, container_name):
+    """Restart network-dependent containers after an update, if the setting is on."""
+    config = load_config()
+    if not config.get('restart_dependents', False):
+        return []
+    restarted = []
+    for dep in get_dependent_containers(container_id, container_name):
+        try:
+            dep.restart()
+            restarted.append(dep.name)
+            logger.info(f"Restarted dependent container '{dep.name}' after update of '{container_name}'")
+        except Exception as e:
+            logger.warning(f"Could not restart dependent container '{dep.name}': {e}")
+    return restarted
 
 # --- Background Worker ---
 
@@ -202,9 +244,11 @@ def background_worker():
 
                                     if should_update:
                                         logger.info(f"Auto-Update triggered for {c.name}")
+                                        saved_id = c.id
                                         trigger_updater_engine(c.name, c.image.id)
+                                        restart_dependents_if_enabled(saved_id, c.name)
                                         with CACHE_LOCK:
-                                            if c.id in SERVER_CACHE: del SERVER_CACHE[c.id]
+                                            if saved_id in SERVER_CACHE: del SERVER_CACHE[saved_id]
 
                             except Exception as inner_e:
                                 logger.warning(f"Failed to process {c.name}: {inner_e}")
@@ -221,7 +265,9 @@ def background_worker():
                                         should_update = True
                                     if should_update:
                                         logger.info(f"Auto-Update triggered for self: {self_container.name}")
+                                        saved_self_id = self_container.id
                                         trigger_updater_engine(self_container.name, self_container.image.id)
+                                        restart_dependents_if_enabled(saved_self_id, self_container.name)
                             except Exception as inner_e:
                                 logger.warning(f"Failed to process self container: {inner_e}")
                         
@@ -254,7 +300,7 @@ def get_settings():
 def update_settings():
     new_settings = request.json
     current_config = load_config()
-    allowed_keys = ["check_mode", "check_interval", "auto_update_mode", "auto_update_containers", "remove_old_images"]
+    allowed_keys = ["check_mode", "check_interval", "auto_update_mode", "auto_update_containers", "remove_old_images", "restart_dependents"]
     for key in allowed_keys:
         if key in new_settings:
             current_config[key] = new_settings[key]
@@ -315,13 +361,16 @@ def run_update(container_name):
     if not client: return jsonify({'error': 'No docker connection'}), 500
     try:
         old_image_id = None
+        container_id = None
         containers = client.containers.list(filters={'name': container_name})
         for c in containers:
             if c.name == container_name:
                 old_image_id = c.image.id
+                container_id = c.id
                 break
         trigger_updater_engine(container_name, old_image_id)
-        return jsonify({'success': True, 'message': f'Update triggered for {container_name}'})
+        restarted = restart_dependents_if_enabled(container_id, container_name) if container_id else []
+        return jsonify({'success': True, 'message': f'Update triggered for {container_name}', 'restarted_dependents': restarted})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
