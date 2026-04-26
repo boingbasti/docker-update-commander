@@ -181,17 +181,21 @@ def get_dependent_containers(container_id, container_name):
         logger.warning(f"Could not determine dependent containers: {e}")
     return dependents
 
-def restart_dependents_if_enabled(container_id, container_name):
-    """Restart network-dependent containers after an update, if the setting is on."""
+def collect_dependents_if_enabled(container_id, container_name):
+    """Collect dependent containers BEFORE the update while they are still running."""
     config = load_config()
     if not config.get('restart_dependents', False):
         return []
+    return get_dependent_containers(container_id, container_name)
+
+def restart_collected_dependents(dependents, updated_name):
+    """Restart a pre-collected list of dependent containers after the update."""
     restarted = []
-    for dep in get_dependent_containers(container_id, container_name):
+    for dep in dependents:
         try:
             dep.restart()
             restarted.append(dep.name)
-            logger.info(f"Restarted dependent container '{dep.name}' after update of '{container_name}'")
+            logger.info(f"Restarted dependent container '{dep.name}' after update of '{updated_name}'")
         except Exception as e:
             logger.warning(f"Could not restart dependent container '{dep.name}': {e}")
     return restarted
@@ -245,8 +249,9 @@ def background_worker():
                                     if should_update:
                                         logger.info(f"Auto-Update triggered for {c.name}")
                                         saved_id = c.id
+                                        dependents = collect_dependents_if_enabled(saved_id, c.name)
                                         trigger_updater_engine(c.name, c.image.id)
-                                        restart_dependents_if_enabled(saved_id, c.name)
+                                        restart_collected_dependents(dependents, c.name)
                                         with CACHE_LOCK:
                                             if saved_id in SERVER_CACHE: del SERVER_CACHE[saved_id]
 
@@ -266,8 +271,9 @@ def background_worker():
                                     if should_update:
                                         logger.info(f"Auto-Update triggered for self: {self_container.name}")
                                         saved_self_id = self_container.id
+                                        dependents = collect_dependents_if_enabled(saved_self_id, self_container.name)
                                         trigger_updater_engine(self_container.name, self_container.image.id)
-                                        restart_dependents_if_enabled(saved_self_id, self_container.name)
+                                        restart_collected_dependents(dependents, self_container.name)
                             except Exception as inner_e:
                                 logger.warning(f"Failed to process self container: {inner_e}")
                         
@@ -368,8 +374,9 @@ def run_update(container_name):
                 old_image_id = c.image.id
                 container_id = c.id
                 break
+        dependents = collect_dependents_if_enabled(container_id, container_name) if container_id else []
         trigger_updater_engine(container_name, old_image_id)
-        restarted = restart_dependents_if_enabled(container_id, container_name) if container_id else []
+        restarted = restart_collected_dependents(dependents, container_name)
         return jsonify({'success': True, 'message': f'Update triggered for {container_name}', 'restarted_dependents': restarted})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
