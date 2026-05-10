@@ -332,6 +332,9 @@ def list_containers():
             if "watchtower" in image_name: continue
             is_self = c.attrs.get('Config', {}).get('Hostname', '') == current_hostname
 
+            network_mode = c.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            depends_on_container = network_mode.split('container:', 1)[1] if network_mode.startswith('container:') else None
+
             container_data = {
                 'id': c.id,
                 'name': c.name,
@@ -339,6 +342,7 @@ def list_containers():
                 'status': c.status,
                 'short_id': c.short_id,
                 'is_self': is_self,
+                'depends_on_container': depends_on_container,
                 'cached_result': None
             }
             

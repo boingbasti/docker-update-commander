@@ -534,10 +534,33 @@
         }
     }
 
+    function sortForUpdate(containers) {
+        // Containers that others depend on (providers) must be updated last,
+        // so their dependents are still running when Watchtower recreates them.
+        const namesInList = new Set(containers.map(c => c.name));
+        const providerNames = new Set(
+            containers
+                .filter(c => c.depends_on_container)
+                .map(c => {
+                    // depends_on_container can be a name, short id, or full id — match by name first
+                    const ref = c.depends_on_container;
+                    const match = containers.find(p => p.name === ref || p.id === ref || p.id.startsWith(ref) || p.short_id === ref);
+                    return match ? match.name : null;
+                })
+                .filter(Boolean)
+        );
+        return [...containers].sort((a, b) => {
+            const aIsProvider = providerNames.has(a.name);
+            const bIsProvider = providerNames.has(b.name);
+            if (aIsProvider !== bIsProvider) return aIsProvider ? 1 : -1;
+            if (a.is_self !== b.is_self) return a.is_self ? 1 : -1;
+            return a.name.localeCompare(b.name);
+        });
+    }
+
     async function performSelectedUpdate() {
-        const toUpdate = allContainers
-            .filter(c => selectedForUpdate.has(c.name) && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local)
-            .sort((a, b) => (a.is_self ? 1 : 0) - (b.is_self ? 1 : 0));
+        const toUpdate = sortForUpdate(allContainers
+            .filter(c => selectedForUpdate.has(c.name) && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local));
         selectModeActive = false;
         selectedForUpdate.clear();
         massUpdateRunning = true;
@@ -563,9 +586,8 @@
         const updateAllBtn = document.getElementById('btn-update-all-found');
         if (checkAllBtn) { checkAllBtn.disabled = true; }
         if (updateAllBtn) { updateAllBtn.disabled = true; }
-        const updatesAvailable = allContainers
-            .filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local)
-            .sort((a, b) => (a.is_self ? 1 : 0) - (b.is_self ? 1 : 0));
+        const updatesAvailable = sortForUpdate(allContainers
+            .filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local));
         try {
             for (const c of updatesAvailable) {
                 await performSingleUpdate(c.name, c.id);
