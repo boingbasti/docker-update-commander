@@ -188,8 +188,37 @@ def collect_dependents_if_enabled(container_id, container_name):
         return []
     return get_dependent_containers(container_id, container_name)
 
+def wait_for_healthy(container_name, timeout=180):
+    """Wait until the named container is healthy, mirroring depends_on: condition: service_healthy."""
+    logger.info(f"Waiting for '{container_name}' to be healthy before restarting dependents...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            matches = client.containers.list(filters={'name': container_name})
+            for c in matches:
+                if c.name == container_name:
+                    c.reload()
+                    health = c.attrs.get('State', {}).get('Health', {})
+                    if health:
+                        if health.get('Status') == 'healthy':
+                            logger.info(f"'{container_name}' is healthy, restarting dependents.")
+                            return True
+                    else:
+                        if c.status == 'running':
+                            logger.info(f"'{container_name}' is running (no healthcheck), restarting dependents.")
+                            return True
+                    break
+        except Exception as e:
+            logger.warning(f"Error checking health of '{container_name}': {e}")
+        time.sleep(5)
+    logger.warning(f"Timed out waiting for '{container_name}' to become healthy after {timeout}s — restarting dependents anyway.")
+    return False
+
 def restart_collected_dependents(dependents, updated_name):
-    """Restart a pre-collected list of dependent containers after the update."""
+    """Wait for the updated container to be healthy, then restart dependent containers."""
+    if not dependents:
+        return []
+    wait_for_healthy(updated_name)
     restarted = []
     for dep in dependents:
         try:
