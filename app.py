@@ -214,19 +214,101 @@ def wait_for_healthy(container_name, timeout=180):
     logger.warning(f"Timed out waiting for '{container_name}' to become healthy after {timeout}s — restarting dependents anyway.")
     return False
 
+def recreate_with_updated_network(dep_container, updated_container_name):
+    """Recreate a container whose NetworkMode references a stale container ID.
+
+    Docker Compose stores network_mode as container:<id>, not container:<name>.
+    When the provider is recreated by Watchtower (new ID), Docker can no longer
+    join the old namespace. Recreation with the container name instead of ID makes
+    all subsequent updates self-healing (start() will suffice from then on).
+    """
+    dep_name = dep_container.name
+    config = dep_container.attrs.get('Config', {})
+    hc = dep_container.attrs.get('HostConfig', {})
+    new_network_mode = f"container:{updated_container_name}"
+    logger.info(f"Recreating '{dep_name}' with network_mode={new_network_mode}")
+
+    try:
+        dep_container.remove(force=True)
+    except Exception as e:
+        logger.warning(f"Could not remove '{dep_name}' before recreation: {e}")
+        return False
+
+    try:
+        run_kwargs = {
+            'image': config.get('Image'),
+            'name': dep_name,
+            'detach': True,
+            'environment': config.get('Env') or [],
+            'network_mode': new_network_mode,
+            'labels': config.get('Labels') or {},
+        }
+        if hc.get('Binds'):
+            run_kwargs['volumes'] = hc['Binds']
+        if hc.get('CapAdd'):
+            run_kwargs['cap_add'] = hc['CapAdd']
+        if hc.get('CapDrop'):
+            run_kwargs['cap_drop'] = hc['CapDrop']
+        if hc.get('Privileged'):
+            run_kwargs['privileged'] = hc['Privileged']
+        if hc.get('Devices'):
+            run_kwargs['devices'] = hc['Devices']
+        if hc.get('Sysctls'):
+            run_kwargs['sysctls'] = hc['Sysctls']
+        if hc.get('Tmpfs'):
+            run_kwargs['tmpfs'] = hc['Tmpfs']
+        if hc.get('RestartPolicy', {}).get('Name'):
+            run_kwargs['restart_policy'] = hc['RestartPolicy']
+        if config.get('Entrypoint'):
+            run_kwargs['entrypoint'] = config['Entrypoint']
+        if config.get('Cmd'):
+            run_kwargs['command'] = config['Cmd']
+
+        client.containers.run(**run_kwargs)
+        logger.info(f"Recreated '{dep_name}' successfully — future updates will use start() directly")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to recreate container '{dep_name}': {e}")
+        return False
+
 def restart_collected_dependents(dependents, updated_name):
-    """Wait for the updated container to be healthy, then restart dependent containers."""
+    """Wait for the updated container to be healthy, then start dependent containers."""
     if not dependents:
         return []
     wait_for_healthy(updated_name)
     restarted = []
     for dep in dependents:
+        dep_name = dep.name
         try:
-            dep.restart()
-            restarted.append(dep.name)
-            logger.info(f"Restarted dependent container '{dep.name}' after update of '{updated_name}'")
+            # Re-fetch by name — the original object may be stale if the container was
+            # recreated by Watchtower during a mass update earlier in the same cycle.
+            try:
+                fresh = client.containers.get(dep_name)
+            except docker.errors.NotFound:
+                logger.warning(f"Dependent container '{dep_name}' not found after update, skipping")
+                continue
+
+            if fresh.status == 'running':
+                logger.info(f"Dependent '{dep_name}' is already running, no action needed")
+                restarted.append(dep_name)
+                continue
+
+            logger.info(f"Starting dependent container '{dep_name}' (status: {fresh.status})")
+            try:
+                fresh.start()
+                restarted.append(dep_name)
+                logger.info(f"Started dependent container '{dep_name}' after update of '{updated_name}'")
+            except Exception as start_err:
+                if 'joining network namespace' in str(start_err) and 'No such container' in str(start_err):
+                    # NetworkMode holds the old provider container ID (set by Docker Compose at
+                    # creation time). Recreate with the provider name so future updates work too.
+                    logger.info(f"'{dep_name}' has a stale network namespace reference — recreating")
+                    if recreate_with_updated_network(fresh, updated_name):
+                        restarted.append(dep_name)
+                else:
+                    logger.warning(f"Could not start dependent container '{dep_name}': {start_err}")
         except Exception as e:
-            logger.warning(f"Could not restart dependent container '{dep.name}': {e}")
+            logger.warning(f"Could not handle dependent container '{dep_name}': {e}")
     return restarted
 
 # --- Background Worker ---
