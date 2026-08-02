@@ -263,6 +263,15 @@ def recreate_with_updated_network(dep_container, updated_container_name):
             run_kwargs['entrypoint'] = config['Entrypoint']
         if config.get('Cmd'):
             run_kwargs['command'] = config['Cmd']
+        hc_def = config.get('Healthcheck') or {}
+        if hc_def.get('Test') and hc_def['Test'] != ['NONE']:
+            run_kwargs['healthcheck'] = {
+                'test': hc_def['Test'],
+                'interval': hc_def.get('Interval'),
+                'timeout': hc_def.get('Timeout'),
+                'retries': hc_def.get('Retries'),
+                'start_period': hc_def.get('StartPeriod'),
+            }
 
         client.containers.run(**run_kwargs)
         logger.info(f"Recreated '{dep_name}' successfully — future updates will use start() directly")
