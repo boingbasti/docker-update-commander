@@ -51,6 +51,11 @@
         .header-area {
             display: flex; justify-content: space-between; align-items: center;
             border-bottom: 1px solid #333; padding-bottom: 20px; margin-bottom: 25px;
+            flex-wrap: wrap; row-gap: 12px;
+        }
+        @media (max-width: 576px) {
+            .header-area { flex-direction: column; align-items: stretch; }
+            .header-area > div:last-child { justify-content: flex-start; }
         }
         
         /* Modal Styles */
@@ -81,7 +86,7 @@
             <h2 class="mb-0">🐳 Docker Update Commander</h2>
             <small>Manage your container updates securely</small>
         </div>
-        <div class="d-flex gap-2 align-items-center">
+        <div class="d-flex gap-2 align-items-center flex-wrap">
             
             <button id="btn-update-all-found" class="btn btn-success fw-bold" style="display: none;" onclick="confirmMassUpdate()">
                 🚀 Update All
