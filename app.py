@@ -272,7 +272,16 @@ def recreate_with_updated_network(dep_container, updated_container_name):
         return False
 
 def restart_collected_dependents(dependents, updated_name):
-    """Wait for the updated container to be healthy, then start dependent containers."""
+    """Wait for the updated container to be healthy, then restart dependent containers.
+
+    Dependents were collected before the update, so their NetworkMode always
+    references the pre-update provider container ID. A container joined to that
+    namespace stays reported as 'running' even after the provider is removed and
+    recreated — the joining process doesn't crash, it just loses connectivity —
+    so status can't be used to decide whether a dependent still needs fixing.
+    Every container here is known to reference the now-stale provider ID by
+    construction, so it's always restarted rather than skipped when 'running'.
+    """
     if not dependents:
         return []
     wait_for_healthy(updated_name)
@@ -288,16 +297,14 @@ def restart_collected_dependents(dependents, updated_name):
                 logger.warning(f"Dependent container '{dep_name}' not found after update, skipping")
                 continue
 
-            if fresh.status == 'running':
-                logger.info(f"Dependent '{dep_name}' is already running, no action needed")
-                restarted.append(dep_name)
-                continue
-
-            logger.info(f"Starting dependent container '{dep_name}' (status: {fresh.status})")
+            logger.info(f"Restarting dependent container '{dep_name}' (status: {fresh.status}) to rejoin '{updated_name}'s network")
             try:
-                fresh.start()
+                if fresh.status == 'running':
+                    fresh.restart()
+                else:
+                    fresh.start()
                 restarted.append(dep_name)
-                logger.info(f"Started dependent container '{dep_name}' after update of '{updated_name}'")
+                logger.info(f"Restarted dependent container '{dep_name}' after update of '{updated_name}'")
             except Exception as start_err:
                 if 'joining network namespace' in str(start_err) and 'No such container' in str(start_err):
                     # NetworkMode holds the old provider container ID (set by Docker Compose at
@@ -306,7 +313,7 @@ def restart_collected_dependents(dependents, updated_name):
                     if recreate_with_updated_network(fresh, updated_name):
                         restarted.append(dep_name)
                 else:
-                    logger.warning(f"Could not start dependent container '{dep_name}': {start_err}")
+                    logger.warning(f"Could not restart dependent container '{dep_name}': {start_err}")
         except Exception as e:
             logger.warning(f"Could not handle dependent container '{dep_name}': {e}")
     return restarted
