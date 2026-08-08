@@ -80,6 +80,12 @@
 </head>
 <body>
 
+<div id="self-restart-overlay" style="display:none; position:fixed; inset:0; z-index:2000; background:rgba(0,0,0,0.75); color:#fff; align-items:center; justify-content:center; flex-direction:column; text-align:center; padding:20px;">
+    <div class="spinner-border text-light mb-3" style="width:3rem; height:3rem;" role="status"></div>
+    <h4 class="mb-2">Update Commander is restarting…</h4>
+    <p class="mb-0" style="max-width:420px;">This dashboard just updated itself. The page will reload automatically as soon as it's back — no action needed.</p>
+</div>
+
 <div class="container py-4">
     <div class="header-area">
         <div>
@@ -605,6 +611,33 @@
         }
     }
 
+    let selfRestartWatcherRunning = false;
+
+    function waitForSelfRestart() {
+        if (selfRestartWatcherRunning) return;
+        selfRestartWatcherRunning = true;
+
+        const overlay = document.getElementById('self-restart-overlay');
+        if (overlay) { overlay.style.display = 'flex'; }
+
+        // Give the old process a moment to actually go down before we start
+        // polling, so the first few checks don't just hit the still-dying instance.
+        setTimeout(pollForSelfBackUp, 2000);
+    }
+
+    async function pollForSelfBackUp() {
+        try {
+            const res = await fetch('/api/settings', { cache: 'no-store' });
+            if (res.ok) {
+                window.location.reload();
+                return;
+            }
+        } catch (e) {
+            // still down, keep polling
+        }
+        setTimeout(pollForSelfBackUp, 1500);
+    }
+
     async function performSingleUpdate(name, id) {
         const containerInfo = allContainers.find(c => c.id === id);
         const isSelf = containerInfo && containerInfo.is_self;
@@ -624,6 +657,7 @@
                 if (isSelf) {
                     if(badge) { badge.className = 'badge bg-info py-2'; badge.innerText = 'Restarting...'; }
                     if(btn) { btn.innerHTML = '↻'; }
+                    waitForSelfRestart();
                     return;
                 }
                 if(badge) { badge.className = 'badge bg-success py-2'; badge.innerText = 'Done!'; }
@@ -642,6 +676,7 @@
                 // Connection dropped = container is restarting, this is expected
                 if(badge) { badge.className = 'badge bg-info py-2'; badge.innerText = 'Restarting...'; }
                 if(btn) { btn.innerHTML = '↻'; }
+                waitForSelfRestart();
                 return;
             }
             if (!wasMassUpdate) massUpdateRunning = false;

@@ -13,7 +13,7 @@ It provides a safe, modern, and user-friendly interface to manage container upda
 * **Smart Automation:** Background checks and selective auto-updates ("Set and Forget").
 * **Real-time Feedback:** See exactly what's happening (Checking, Updating, Done).
 * **Flexible Updates:** Update all containers at once, or use Select Mode to pick specific ones.
-* **Self-Update Support:** The dashboard can update itself — it triggers last so all other containers finish first.
+* **Self-Update Support:** The dashboard can update itself — it triggers last so all other containers finish first. While it restarts, the UI shows a status overlay and reloads automatically once it's back.
 * **Cleanup Option:** Automatically remove replaced images after an update to keep your host clean.
 * **Dependent Container Restart:** Automatically restarts containers that share their network with an updated container (e.g. containers routed through a VPN/WireGuard container).
 * **Production Ready:** Built on **Alpine Linux** (~68MB) running on a robust **Gunicorn** WSGI server.
