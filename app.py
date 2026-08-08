@@ -108,6 +108,17 @@ def perform_single_check(container_id):
     except (docker.errors.NotFound, docker.errors.APIError):
         is_local = True
         logger.info(f"Local detection: '{image_name}' not found on registry. Treating as local image.")
+
+        # No registry to compare against, but a newer build with the same tag
+        # may already sit in the local image cache (e.g. after a manual
+        # `docker build` that hasn't been rolled out to the container yet).
+        try:
+            local_img = client.images.get(image_name)
+            new_id = local_img.id
+            new_created = local_img.attrs.get('Created', 'Unknown')
+            update_available = new_id != current_id
+        except docker.errors.ImageNotFound:
+            pass
     except Exception as e:
         raise e
 
@@ -146,23 +157,29 @@ def trigger_updater_engine(container_name, old_image_id=None):
     )
 
     # 3. Remove old image if setting is enabled
-    if old_image_id:
-        config = load_config()
-        if config.get('remove_old_images', False):
-            try:
-                # Check if any RUNNING container still uses the old image — don't break those.
-                # Stopped containers referencing it are irrelevant (force=True handles them).
-                running_users = [
-                    c.name for c in client.containers.list()
-                    if c.image.id == old_image_id
-                ]
-                if running_users:
-                    logger.info(f"Skipping removal of old image {old_image_id[:12]}: still used by running containers {running_users}")
-                else:
-                    client.images.remove(old_image_id, force=True)
-                    logger.info(f"Removed old image {old_image_id[:12]} after update of {container_name}")
-            except Exception as e:
-                logger.warning(f"Could not remove old image {old_image_id[:12]}: {e}")
+    remove_old_image_if_enabled(old_image_id, container_name)
+
+def remove_old_image_if_enabled(old_image_id, container_name):
+    """Remove the pre-update image if the setting is on and nothing else still uses it."""
+    if not old_image_id:
+        return
+    config = load_config()
+    if not config.get('remove_old_images', False):
+        return
+    try:
+        # Check if any RUNNING container still uses the old image — don't break those.
+        # Stopped containers referencing it are irrelevant (force=True handles them).
+        running_users = [
+            c.name for c in client.containers.list()
+            if c.image.id == old_image_id
+        ]
+        if running_users:
+            logger.info(f"Skipping removal of old image {old_image_id[:12]}: still used by running containers {running_users}")
+        else:
+            client.images.remove(old_image_id, force=True)
+            logger.info(f"Removed old image {old_image_id[:12]} after update of {container_name}")
+    except Exception as e:
+        logger.warning(f"Could not remove old image {old_image_id[:12]}: {e}")
 
 def get_dependent_containers(container_id, container_name):
     """Find running containers whose network namespace is shared with the given container."""
@@ -214,6 +231,53 @@ def wait_for_healthy(container_name, timeout=180):
     logger.warning(f"Timed out waiting for '{container_name}' to become healthy after {timeout}s — restarting dependents anyway.")
     return False
 
+def build_recreate_kwargs(container, name, image, network_mode=None):
+    """Build client.containers.run() kwargs that preserve a container's config."""
+    config = container.attrs.get('Config', {})
+    hc = container.attrs.get('HostConfig', {})
+
+    run_kwargs = {
+        'image': image,
+        'name': name,
+        'detach': True,
+        'environment': config.get('Env') or [],
+        'labels': config.get('Labels') or {},
+    }
+    if network_mode:
+        run_kwargs['network_mode'] = network_mode
+    if hc.get('PortBindings') and not network_mode:
+        run_kwargs['ports'] = hc['PortBindings']
+    if hc.get('Binds'):
+        run_kwargs['volumes'] = hc['Binds']
+    if hc.get('CapAdd'):
+        run_kwargs['cap_add'] = hc['CapAdd']
+    if hc.get('CapDrop'):
+        run_kwargs['cap_drop'] = hc['CapDrop']
+    if hc.get('Privileged'):
+        run_kwargs['privileged'] = hc['Privileged']
+    if hc.get('Devices'):
+        run_kwargs['devices'] = hc['Devices']
+    if hc.get('Sysctls'):
+        run_kwargs['sysctls'] = hc['Sysctls']
+    if hc.get('Tmpfs'):
+        run_kwargs['tmpfs'] = hc['Tmpfs']
+    if hc.get('RestartPolicy', {}).get('Name'):
+        run_kwargs['restart_policy'] = hc['RestartPolicy']
+    if config.get('Entrypoint'):
+        run_kwargs['entrypoint'] = config['Entrypoint']
+    if config.get('Cmd'):
+        run_kwargs['command'] = config['Cmd']
+    hc_def = config.get('Healthcheck') or {}
+    if hc_def.get('Test') and hc_def['Test'] != ['NONE']:
+        run_kwargs['healthcheck'] = {
+            'test': hc_def['Test'],
+            'interval': hc_def.get('Interval'),
+            'timeout': hc_def.get('Timeout'),
+            'retries': hc_def.get('Retries'),
+            'start_period': hc_def.get('StartPeriod'),
+        }
+    return run_kwargs
+
 def recreate_with_updated_network(dep_container, updated_container_name):
     """Recreate a container whose NetworkMode references a stale container ID.
 
@@ -223,8 +287,6 @@ def recreate_with_updated_network(dep_container, updated_container_name):
     all subsequent updates self-healing (start() will suffice from then on).
     """
     dep_name = dep_container.name
-    config = dep_container.attrs.get('Config', {})
-    hc = dep_container.attrs.get('HostConfig', {})
     new_network_mode = f"container:{updated_container_name}"
     logger.info(f"Recreating '{dep_name}' with network_mode={new_network_mode}")
 
@@ -235,50 +297,40 @@ def recreate_with_updated_network(dep_container, updated_container_name):
         return False
 
     try:
-        run_kwargs = {
-            'image': config.get('Image'),
-            'name': dep_name,
-            'detach': True,
-            'environment': config.get('Env') or [],
-            'network_mode': new_network_mode,
-            'labels': config.get('Labels') or {},
-        }
-        if hc.get('Binds'):
-            run_kwargs['volumes'] = hc['Binds']
-        if hc.get('CapAdd'):
-            run_kwargs['cap_add'] = hc['CapAdd']
-        if hc.get('CapDrop'):
-            run_kwargs['cap_drop'] = hc['CapDrop']
-        if hc.get('Privileged'):
-            run_kwargs['privileged'] = hc['Privileged']
-        if hc.get('Devices'):
-            run_kwargs['devices'] = hc['Devices']
-        if hc.get('Sysctls'):
-            run_kwargs['sysctls'] = hc['Sysctls']
-        if hc.get('Tmpfs'):
-            run_kwargs['tmpfs'] = hc['Tmpfs']
-        if hc.get('RestartPolicy', {}).get('Name'):
-            run_kwargs['restart_policy'] = hc['RestartPolicy']
-        if config.get('Entrypoint'):
-            run_kwargs['entrypoint'] = config['Entrypoint']
-        if config.get('Cmd'):
-            run_kwargs['command'] = config['Cmd']
-        hc_def = config.get('Healthcheck') or {}
-        if hc_def.get('Test') and hc_def['Test'] != ['NONE']:
-            run_kwargs['healthcheck'] = {
-                'test': hc_def['Test'],
-                'interval': hc_def.get('Interval'),
-                'timeout': hc_def.get('Timeout'),
-                'retries': hc_def.get('Retries'),
-                'start_period': hc_def.get('StartPeriod'),
-            }
-
+        image = dep_container.attrs.get('Config', {}).get('Image')
+        run_kwargs = build_recreate_kwargs(dep_container, dep_name, image, network_mode=new_network_mode)
         client.containers.run(**run_kwargs)
         logger.info(f"Recreated '{dep_name}' successfully — future updates will use start() directly")
         return True
     except Exception as e:
         logger.error(f"Failed to recreate container '{dep_name}': {e}")
         return False
+
+def recreate_with_local_image(container_name):
+    """Recreate a container in-place using whatever image its tag currently
+    resolves to locally — no registry pull. This is the path for images that
+    only exist locally (e.g. custom builds), where Watchtower's pull-first
+    approach always fails with 'pull access denied'."""
+    container = client.containers.get(container_name)
+    image = container.attrs.get('Config', {}).get('Image')
+    network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+    is_container_network = network_mode.startswith('container:')
+
+    try:
+        container.remove(force=True)
+    except Exception as e:
+        logger.error(f"Could not remove '{container_name}' before local recreation: {e}")
+        raise
+
+    run_kwargs = build_recreate_kwargs(
+        container, container_name, image,
+        network_mode=network_mode if is_container_network else None
+    )
+    if not is_container_network and network_mode not in ('', 'default', 'bridge'):
+        run_kwargs['network_mode'] = network_mode
+
+    client.containers.run(**run_kwargs)
+    logger.info(f"Recreated '{container_name}' with current local image for '{image}'")
 
 def restart_collected_dependents(dependents, updated_name):
     """Wait for the updated container to be healthy, then restart dependent containers.
@@ -505,8 +557,20 @@ def run_update(container_name):
                 old_image_id = c.image.id
                 container_id = c.id
                 break
+
+        with CACHE_LOCK:
+            cached = SERVER_CACHE.get(container_id, {})
+        is_local_update = cached.get('is_local', False)
+
         dependents = collect_dependents_if_enabled(container_id, container_name) if container_id else []
-        trigger_updater_engine(container_name, old_image_id)
+        if is_local_update:
+            # Watchtower always attempts a registry pull first and gives up with
+            # "pull access denied" on images that only exist locally — it never
+            # falls back to an already-newer local image. Recreate directly instead.
+            recreate_with_local_image(container_name)
+            remove_old_image_if_enabled(old_image_id, container_name)
+        else:
+            trigger_updater_engine(container_name, old_image_id)
         restarted = restart_collected_dependents(dependents, container_name)
         return jsonify({'success': True, 'message': f'Update triggered for {container_name}', 'restarted_dependents': restarted})
     except Exception as e:

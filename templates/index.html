@@ -148,7 +148,7 @@
                     ⚠️ Updates run directly on the Docker daemon. Closing this page will <strong>not</strong> stop a running update — it will complete regardless.
                 </div>
                 <div id="selfUpdateWarning" class="alert alert-warning small mt-2 mb-0" style="display:none;">
-                    🔄 This will update the dashboard itself. The connection will drop — just refresh the page after a few seconds.
+                    🔄 This will update the dashboard itself. The connection will drop briefly — the page reloads automatically once it's back.
                 </div>
             </div>
             <div class="modal-footer">
@@ -326,7 +326,7 @@
         const btnCheckAll = document.getElementById('btn-check-all');
         if (btnCheckAll && !checkAbortController) btnCheckAll.disabled = isBusy;
 
-        const updatesAvailableCount = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local).length;
+        const updatesAvailableCount = allContainers.filter(c => c.cached_result && c.cached_result.update_available).length;
         const btnUpdateAll = document.getElementById('btn-update-all-found');
         const btnSelectMode = document.getElementById('btn-select-mode');
         const btnCancelSelect = document.getElementById('btn-cancel-select');
@@ -377,7 +377,13 @@
 
             if (c.cached_result) {
                 const data = c.cached_result;
-                if (data.is_local) {
+                if (data.is_local && data.update_available) {
+                    state.badgeClass = 'bg-warning text-dark'; state.badgeText = 'Local Update Found!';
+                    state.btnUpdateClass = 'btn-success'; state.btnUpdateDisabled = '';
+                    state.infoBoxStyle = 'display:block;'; state.infoBorderColor = '#ffc107';
+                    state.infoBoxContent = `<div class="mb-1"><span class="v-label">Current:</span> <span class="v-val">${data.current_id_short}</span> <small class="v-date">(${formatDate(data.current_created)})</small></div><div class="mb-1"><span class="v-label">New:</span> <span class="v-new">${data.new_id_short}</span> <small class="v-new">(${formatDate(data.new_created)})</small></div><div class="text-muted small">Newer local image found — no registry to compare against</div>`;
+                }
+                else if (data.is_local) {
                     state.badgeClass = 'bg-info text-dark'; state.badgeText = 'Local Image';
                     state.btnUpdateClass = 'btn-secondary disabled'; state.btnUpdateDisabled = 'disabled';
                     state.infoBoxStyle = 'display:block;'; state.infoBorderColor = '#0dcaf0';
@@ -415,7 +421,7 @@
                             <div class="d-flex align-items-center gap-2">
                                 <span id="badge-${c.id}" class="badge ${state.badgeClass} py-2" style="min-width: 100px;">${state.badgeText}</span>
                                 <button class="btn btn-sm btn-outline-info btn-check-action" style="width: 80px;" data-id="${c.id}" data-name="${c.name}" onclick="checkUpdate('${c.id}', this)" ${massUpdateRunning || checkAbortController || checkRunning || selectModeActive ? 'disabled' : ''}>Check</button>
-                                ${showSelectCheckboxes && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local
+                                ${showSelectCheckboxes && c.cached_result && c.cached_result.update_available
                                     ? `<div class="form-check mb-0 ms-1">
                                         <input class="form-check-input" type="checkbox" id="sel-${c.id}" ${selectedForUpdate.has(c.name) ? 'checked' : ''} onchange="toggleContainerSelection('${c.name}')">
                                        </div>`
@@ -431,10 +437,10 @@
     }
 
     function getUpdateScore(c) {
-        if (!c.cached_result) return 0; 
-        if (c.cached_result.is_local) return -1; 
-        if (c.cached_result.update_available) return 2; 
-        return 1; 
+        if (!c.cached_result) return 0;
+        if (c.cached_result.update_available) return 2;
+        if (c.cached_result.is_local) return -1;
+        return 1;
     }
 
     function truncateString(str, num) { return str.length <= num ? str : str.slice(0, num) + '...'; }
@@ -520,7 +526,7 @@
     }
 
     function confirmMassUpdate() {
-        const updatesAvailable = allContainers.filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local);
+        const updatesAvailable = allContainers.filter(c => c.cached_result && c.cached_result.update_available);
         if (updatesAvailable.length === 0) return;
 
         pendingUpdateTarget = 'ALL';
@@ -571,7 +577,7 @@
 
     async function performSelectedUpdate() {
         const toUpdate = sortForUpdate(allContainers
-            .filter(c => selectedForUpdate.has(c.name) && c.cached_result && c.cached_result.update_available && !c.cached_result.is_local));
+            .filter(c => selectedForUpdate.has(c.name) && c.cached_result && c.cached_result.update_available));
         selectModeActive = false;
         selectedForUpdate.clear();
         massUpdateRunning = true;
@@ -598,7 +604,7 @@
         if (checkAllBtn) { checkAllBtn.disabled = true; }
         if (updateAllBtn) { updateAllBtn.disabled = true; }
         const updatesAvailable = sortForUpdate(allContainers
-            .filter(c => c.cached_result && c.cached_result.update_available && !c.cached_result.is_local));
+            .filter(c => c.cached_result && c.cached_result.update_available));
         try {
             for (const c of updatesAvailable) {
                 await performSingleUpdate(c.name, c.id);
