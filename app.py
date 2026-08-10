@@ -316,6 +316,19 @@ def recreate_with_local_image(container_name):
     network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
     is_container_network = network_mode.startswith('container:')
 
+    # Named networks (e.g. macvlan) can carry a fixed IP that Docker won't
+    # reassign automatically — capture it so it survives the recreation.
+    networks = container.attrs.get('NetworkSettings', {}).get('Networks', {}) or {}
+    fixed_network = None
+    fixed_ipv4 = None
+    fixed_ipv6 = None
+    if not is_container_network and network_mode not in ('', 'default', 'bridge'):
+        net_info = networks.get(network_mode)
+        if net_info:
+            fixed_network = network_mode
+            fixed_ipv4 = net_info.get('IPAddress') or None
+            fixed_ipv6 = net_info.get('GlobalIPv6Address') or None
+
     try:
         container.remove(force=True)
     except Exception as e:
@@ -326,11 +339,36 @@ def recreate_with_local_image(container_name):
         container, container_name, image,
         network_mode=network_mode if is_container_network else None
     )
-    if not is_container_network and network_mode not in ('', 'default', 'bridge'):
-        run_kwargs['network_mode'] = network_mode
 
-    client.containers.run(**run_kwargs)
-    logger.info(f"Recreated '{container_name}' with current local image for '{image}'")
+    if fixed_network:
+        # containers.run()/create() with no network kwarg auto-attaches the
+        # default bridge network, and Docker refuses to reconnect a container
+        # that already has a network attached — so the target network can't
+        # simply be added afterwards. Detach the auto-added bridge network
+        # first, then attach the real one with the original fixed IP, then
+        # start — this is the order dockerd requires.
+        run_kwargs.pop('network_mode', None)
+        new_container = client.containers.create(**run_kwargs)
+
+        new_container.reload()
+        for net_name in list(new_container.attrs.get('NetworkSettings', {}).get('Networks', {}).keys()):
+            bridge_net = client.networks.get(net_name)
+            bridge_net.disconnect(new_container, force=True)
+
+        network = client.networks.get(fixed_network)
+        connect_kwargs = {}
+        if fixed_ipv4:
+            connect_kwargs['ipv4_address'] = fixed_ipv4
+        if fixed_ipv6:
+            connect_kwargs['ipv6_address'] = fixed_ipv6
+        network.connect(new_container, **connect_kwargs)
+        new_container.start()
+        logger.info(f"Recreated '{container_name}' on network '{fixed_network}' with fixed IP {fixed_ipv4 or fixed_ipv6}")
+    else:
+        if not is_container_network and network_mode not in ('', 'default', 'bridge'):
+            run_kwargs['network_mode'] = network_mode
+        client.containers.run(**run_kwargs)
+        logger.info(f"Recreated '{container_name}' with current local image for '{image}'")
 
 def restart_collected_dependents(dependents, updated_name):
     """Wait for the updated container to be healthy, then restart dependent containers.
